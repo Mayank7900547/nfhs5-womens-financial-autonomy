@@ -7,6 +7,8 @@ differences calculated in this file. All figures require verification against
 the original report.
 """
 
+from decimal import ROUND_HALF_UP, Decimal
+
 import pandas as pd
 import plotly.graph_objects as go
 import streamlit as st
@@ -371,6 +373,251 @@ i3.markdown(
 )
 
 # ----------------------------------------------------------------------------
+# 6b. Before vs. After: Financial Empowerment Intervention (hypothetical simulator)
+# ----------------------------------------------------------------------------
+GREEN = "#1B7F3B"  # increase (AA on white)
+RED = "#B3261E"    # decrease (AA on white)
+SIM_WARNING = (
+    "Illustrative scenario only. Follow-up values are hypothetical assumptions, not measured "
+    "outcomes. NFHS-5 baseline statistics do not establish intervention effectiveness."
+)
+SCENARIO_NAME = "Illustrative Financial Empowerment Programme"
+
+# key, short label, baseline (from `indicators`, same order), illustrative example value
+SIM_META = [
+    ("acct", "Personal-use bank account", 80),
+    ("ctrl", "Money they can decide how to use", 65),
+    ("mob", "Mobile phone used for financial transactions", 50),
+    ("aware", "Aware of a microcredit programme", 50),
+    ("loan", "Has taken a microcredit-programme loan", 8),
+]
+SIM = pd.DataFrame(
+    [
+        dict(
+            key=k, label=lbl, full=indicators.indicator[i], baseline=int(indicators.value_pct[i]),
+            example=ex, denominator=indicators.denominator[i],
+        )
+        for i, (k, lbl, ex) in enumerate(SIM_META)
+    ]
+)
+
+
+def round_half_up(x: float, places: int = 1) -> float:
+    q = Decimal(1).scaleb(-places)
+    return float(Decimal(str(x)).quantize(q, rounding=ROUND_HALF_UP))
+
+
+def _apply_preset():
+    for _, r in SIM.iterrows():
+        st.session_state[f"sim_{r.key}"] = (
+            r.example if st.session_state["sim_preset"].startswith("Example") else r.baseline
+        )
+
+
+st.markdown("## Before vs. After: Financial Empowerment Intervention")
+st.error("**" + SIM_WARNING + "**")
+st.markdown(
+    f"""<p class="small"><strong>Scenario:</strong> {SCENARIO_NAME}. <strong>Baseline</strong> = the
+    published NFHS-5 Delhi figures from the supplied report excerpt, <em>pending verification</em>.
+    <strong>Follow-up</strong> = values <em>you</em> assume using the sliders. No follow-up survey exists
+    in this dashboard; nothing below is an observed result.</p>""",
+    unsafe_allow_html=True,
+)
+
+if "sim_preset" not in st.session_state:
+    st.session_state["sim_preset"] = "Example assumptions (arbitrary, for demonstration)"
+    _apply_preset()
+st.radio(
+    "Starting assumptions",
+    ["Example assumptions (arbitrary, for demonstration)", "No change (follow-up equals baseline)"],
+    key="sim_preset", on_change=_apply_preset, horizontal=True,
+)
+st.caption(
+    "The example values are arbitrary round numbers chosen only to demonstrate the calculations. "
+    "They are not forecasts and have no evidence behind them. Replace them with your own assumptions."
+)
+
+st.markdown("**Set hypothetical follow-up values (0–100%)**")
+sl1, sl2 = st.columns(2, gap="large")
+follow = {}
+for n, r in SIM.iterrows():
+    with (sl1 if n % 2 == 0 else sl2):
+        follow[r.key] = st.slider(
+            f"{r.label} (baseline {r.baseline}%)",
+            min_value=0, max_value=100, step=1, key=f"sim_{r.key}",
+            help=f"Base: {r.denominator}",
+        )
+
+sim = SIM.copy()
+sim["followup"] = sim.key.map(follow).astype(int)
+sim["pp_change"] = sim.followup - sim.baseline
+sim["rel_change"] = [
+    round_half_up((f - b) / b * 100) if b > 0 else None
+    for b, f in zip(sim.baseline, sim.followup)
+]
+
+
+def _fmt_pp(v: int) -> str:
+    return f"{v:+d} pp" if v else "0 pp"
+
+
+def _fmt_rel(v) -> str:
+    return "n/a (baseline is 0)" if v is None else (f"{v:+.1f}%" if v else "0.0%")
+
+
+def _dir(v: int):
+    if v > 0:
+        return GREEN, "▲ increase"
+    if v < 0:
+        return RED, "▼ decrease"
+    return MUTED, "■ no change"
+
+
+st.markdown("### Before-and-after indicator cards")
+card_cols = st.columns(5, gap="small")
+for col, (_, r) in zip(card_cols, sim.iterrows()):
+    color, word = _dir(r.pp_change)
+    col.markdown(
+        f"""<div class="kpi" role="group" aria-label="{r.label}: baseline {r.baseline} percent, hypothetical follow-up {r.followup} percent">
+        <div class="lbl"><strong>{r.label}</strong></div>
+        <div class="small" style="margin-top:.5rem">Baseline (published, unverified)</div>
+        <div class="num" style="font-size:1.7rem">{r.baseline}%</div>
+        <div class="small" style="margin-top:.4rem">Follow-up (hypothetical)</div>
+        <div class="num" style="font-size:1.7rem;color:{ORANGE}">{r.followup}%</div>
+        <div style="margin-top:.6rem;font-weight:600;color:{color}">{word}: {_fmt_pp(r.pp_change)}</div>
+        <div style="color:{color};font-size:.9rem">Relative: {_fmt_rel(r.rel_change)}</div>
+        <div class="base">Base: {r.denominator}</div></div>""",
+        unsafe_allow_html=True,
+    )
+st.caption(
+    "Green = value assumed higher than baseline; red = assumed lower. Direction is not automatically "
+    "better or worse welfare for every indicator."
+)
+
+st.markdown("### Baseline vs. hypothetical follow-up")
+fig = go.Figure()
+fig.add_trace(go.Bar(
+    x=sim.label, y=sim.baseline, name="Baseline (published NFHS-5 Delhi, unverified)",
+    marker_color=BLUE, text=[f"{v}%" for v in sim.baseline], textposition="outside",
+    hovertemplate="<b>%{x}</b><br>Baseline: %{y}%<extra></extra>",
+))
+fig.add_trace(go.Bar(
+    x=sim.label, y=sim.followup, name="Follow-up: hypothetical assumption (not observed)",
+    marker=dict(color=ORANGE, pattern=dict(shape="/")),
+    text=[f"{v}%" for v in sim.followup], textposition="outside",
+    hovertemplate="<b>%{x}</b><br>Hypothetical follow-up: %{y}%<extra></extra>",
+))
+fig.update_layout(barmode="group")
+fig.update_yaxes(range=[0, 110], title="Percent (axis starts at 0)", ticksuffix="%")
+fig.update_xaxes(tickangle=0)
+style_fig(fig, height=430)
+st.plotly_chart(fig, width="stretch")
+
+st.markdown("### Percentage-point change from baseline")
+fig = go.Figure(go.Bar(
+    x=sim.label, y=sim.pp_change,
+    marker_color=[GREEN if v > 0 else RED if v < 0 else MUTED for v in sim.pp_change],
+    text=[_fmt_pp(v) for v in sim.pp_change], textposition="outside",
+    customdata=[_fmt_rel(v) for v in sim.rel_change],
+    hovertemplate="<b>%{x}</b><br>Change: %{y} pp<br>Relative: %{customdata}<extra></extra>",
+))
+lim = max(10, int(sim.pp_change.abs().max()) + 12)
+fig.update_yaxes(range=[-lim, lim], title="Percentage points", zeroline=True, zerolinecolor=INK)
+fig.update_xaxes(tickangle=0)
+style_fig(fig, height=380)
+fig.update_layout(showlegend=False)
+st.plotly_chart(fig, width="stretch")
+
+with st.expander("View calculations as a table"):
+    st.dataframe(
+        sim.assign(
+            relative=sim.rel_change.map(_fmt_rel), pp=sim.pp_change.map(_fmt_pp)
+        )[["full", "baseline", "followup", "pp", "relative", "denominator"]].rename(columns={
+            "full": "Indicator", "baseline": "Baseline % (published)",
+            "followup": "Follow-up % (hypothetical)", "pp": "Change (pp)",
+            "relative": "Relative change", "denominator": "Base",
+        }),
+        hide_index=True, width="stretch",
+    )
+    st.markdown(
+        '<p class="small">Percentage-point change = follow-up − baseline. Relative change = '
+        "(follow-up − baseline) ÷ baseline × 100, shown only when baseline &gt; 0. Relative changes "
+        "are rounded half-up to one decimal.</p>",
+        unsafe_allow_html=True,
+    )
+
+# ---- Dynamic summary -------------------------------------------------------
+st.markdown("### Summary of the hypothetical scenario")
+S = sim.set_index("key")
+
+
+def _phrase(k: str) -> str:
+    r = S.loc[k]
+    if r.pp_change == 0:
+        return f"**{r.label}** is assumed unchanged at {r.baseline}%"
+    d = "rises" if r.pp_change > 0 else "falls"
+    rel = "" if r.rel_change is None else f", {r.rel_change:+.1f}% relative"
+    return f"**{r.label}** {d} from {r.baseline}% to {r.followup}% ({r.pp_change:+d} pp{rel})"
+
+
+moved = int((sim.pp_change != 0).sum())
+if moved == 0:
+    st.markdown(
+        f"Under the *{SCENARIO_NAME}* assumptions, no indicator differs from its baseline, so there is nothing to compare."
+    )
+else:
+    st.markdown(
+        f"Under the *{SCENARIO_NAME}* assumptions, {moved} of 5 indicators differ from baseline. "
+        "These are the numbers you entered, not results:"
+    )
+    st.markdown(
+        "- **Access:** " + _phrase("acct") + ".\n"
+        "- **Autonomy:** " + _phrase("ctrl") + ".\n"
+        "- **Digital use:** " + _phrase("mob") + ", among women with a mobile phone.\n"
+        "- **Microcredit awareness:** " + _phrase("aware") + ".\n"
+        "- **Microcredit uptake:** " + _phrase("loan") + "."
+    )
+    st.markdown(
+        f"Assumed gap between account access and money control: baseline "
+        f"{S.loc['acct','baseline'] - S.loc['ctrl','baseline']} pp, hypothetical follow-up "
+        f"{S.loc['acct','followup'] - S.loc['ctrl','followup']} pp. These are different indicators with "
+        "bases not stated, so this is not a count of women with an account but no control."
+    )
+    st.markdown(
+        "**Awareness is not uptake.** Knowing about a microcredit programme and having taken a loan "
+        "are separate indicators. A higher assumed loan figure does not mean better welfare: repayment, "
+        "debt burden, how loans are used and wellbeing are not measured here, and a fall in borrowing "
+        "is not automatically worse."
+    )
+    if S.loc["loan", "followup"] > S.loc["aware", "followup"]:
+        st.info(
+            "Your assumed loan figure is higher than your assumed awareness figure. The bases of these "
+            "indicators are not stated, so this may or may not be possible; check the report."
+        )
+st.error("**" + SIM_WARNING + "**")
+
+# ---- Scenario CSV ------------------------------------------------------------
+sim_export = pd.DataFrame({
+    "scenario": SCENARIO_NAME,
+    "indicator": sim.full,
+    "baseline_pct": sim.baseline,
+    "baseline_status": "Published figure from supplied NFHS-5 Delhi report excerpt; requires verification",
+    "followup_pct": sim.followup,
+    "followup_status": "HYPOTHETICAL ASSUMPTION; not observed data",
+    "pp_change": sim.pp_change,
+    "relative_change_pct": sim.rel_change,
+    "denominator": sim.denominator,
+    "geography": "Delhi (NCT)",
+    "warning": SIM_WARNING,
+})
+st.download_button(
+    "Download scenario data (CSV)",
+    data=sim_export.to_csv(index=False).encode("utf-8"),
+    file_name="nfhs5_delhi_illustrative_scenario.csv",
+    mime="text/csv",
+)
+
+# ----------------------------------------------------------------------------
 # 7. Methodology & limitations
 # ----------------------------------------------------------------------------
 st.markdown("## Methodology and data limitations")
@@ -380,12 +627,13 @@ st.markdown(
 report excerpt for Delhi (National Capital Territory). The original excerpt was not available to the
 developer of this dashboard, so **no figure has been independently verified.**
 
-**What was calculated.** Only three percentage-point differences: {ru_gap} pp rural vs. urban, {edu_gap} pp by education, and {access_vs_control_gap} pp between the first two indicators. These are simple subtractions.
+**What was calculated.** Only three percentage-point differences: {ru_gap} pp rural vs. urban, {edu_gap} pp by education, and {access_vs_control_gap} pp between the first two indicators. These are simple subtractions. The before-vs-after simulator additionally calculates percentage-point and relative changes between the published baseline and user-entered hypothetical values.
 
 **Limitations.**
 - **Bases (denominators):** only the mobile-transaction figure has a stated base. The others are labelled "not stated"; do not assume they are all women aged 15–49, or the same group.
 - **No sample sizes, confidence intervals or weights.** The supplied figures are published estimates from a complex survey. Without sample sizes, small-group figures (such as rural Delhi) cannot be assessed for reliability, and no significance claims can be made.
 - **Descriptive only.** Nothing here establishes cause and effect.
+- **Simulator is hypothetical.** Follow-up values are user assumptions, not observed data. The simulator estimates no intervention effect and makes no causal or statistical-significance claim.
 - **Delhi only.** Results should not be generalised to all India or other states.
 - **Limited disaggregation.** Only residence and two education groups were supplied. Age, wealth, employment and other breakdowns are not included.
 - **Violence-related indicators are not included.**
